@@ -1,27 +1,13 @@
 ---
-title: "seurat"
-author: "YujuanGui"
-date: "11/4/2019"
+title: "scATAC"
 output: html_document
 ---
-
-updated on 20200325: cell_type is the same in 01_seurat and 05_dropViz_background
 
 # scATAC
 
 ## setup
 - peak matrix from scATAC
 - do it on cluster because of memory limitation
-
-```{bash}
-srun -p interactive --qos qos-interactive -N 1 -n 24 --time=2:0:0 --pty bash -i
-
-module load swenv/default-env/devel
-module load lang/R/3.6.0-foss-2019a-bare
-module load lang/R/3.6.0-intel-2019a-bare
-
-# have to play around the environment to install packages
-```
 
 ```{r}
 library(tidyverse)
