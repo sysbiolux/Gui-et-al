@@ -1,0 +1,1140 @@
+---
+title: "seurat"
+author: "YujuanGui"
+date: "11/4/2019"
+output: html_document
+---
+
+updated on 20200325: cell_type is the same in 01_seurat and 05_dropViz_background
+
+# scATAC
+
+## setup
+- peak matrix from scATAC
+- do it on cluster because of memory limitation
+
+```{bash}
+srun -p interactive --qos qos-interactive -N 1 -n 24 --time=2:0:0 --pty bash -i
+
+module load swenv/default-env/devel
+module load lang/R/3.6.0-foss-2019a-bare
+module load lang/R/3.6.0-intel-2019a-bare
+
+# have to play around the environment to install packages
+```
+
+```{r}
+library(tidyverse)
+library(Signac)
+library(Seurat)
+library(GenomeInfoDb)
+library(EnsDb.Mmusculus.v79)
+library(hdf5r)
+```
+
+# aj - scATAC
+## gene activity quantification
+```{r}
+peaks_aj <- Read10X_h5("/work/projects/daneurogen/atac_201909/data/03_reanalyze/aj/outs/filtered_peak_bc_matrix.h5")
+
+# Peaks that fall within gene bodies, or 2kb upstream of a gene, are considered
+activity_mat_aj <- CreateGeneActivityMatrix(peak.matrix = peaks_aj, annotation.file = "/work/projects/daneurogen/genome/ref_10xGenomics/refdata-cellranger-atac-mm10-1.1.0/genes/genes.gtf", seq.levels = c(paste("chr", c(1:19, "X", "Y"), sep = "")), upstream = 2000, verbose = T) 
+```
+
+## create object
+Filter out cells fewer than 5K total counts in the scATAC-seq data (Seurat)
+```{r}
+aj_atac <- CreateSeuratObject(counts = peaks_aj, assay = "ATAC", project = "10x_ATAC")
+
+aj_atac[["ACTIVITY"]] <- CreateAssayObject(counts = activity_mat_aj)
+
+meta <- read.table("/work/projects/daneurogen/atac_201909/data/03_reanalyze/aj/outs/singlecell.csv", sep = ",", header = TRUE, row.names = 1, stringsAsFactors = FALSE)
+
+meta <- meta[colnames(aj_atac), ]
+
+aj_atac <- AddMetaData(aj_atac, metadata = meta)
+
+aj_atac <- subset(aj_atac, subset = nCount_ATAC > 5000)
+
+aj_atac$tech <- "scATAC-seq"
+```
+
+> colnames(meta)
+ [1] "TSS_fragments"                    "DNase_sensitive_region_fragments"
+ [3] "enhancer_region_fragments"        "promoter_region_fragments"       
+ [5] "on_target_fragments"              "blacklist_region_fragments"      
+ [7] "peak_region_fragments"            "peak_region_cutsites"            
+ [9] "passed_filters"                   "duplicate"                       
+[11] "cell_id"                          "is__cell_barcode"  
+
+## data processing on assay "ACTIVITY" (Peaks)
+```{r}
+DefaultAssay(aj_atac) <- "ACTIVITY"
+
+aj_atac <- FindVariableFeatures(aj_atac)
+
+aj_atac <- NormalizeData(aj_atac)
+
+aj_atac <- ScaleData(aj_atac)
+```
+
+## data processing on assay "ATAC"
+latent semantic indexing to reduce the dimensionality of the scATAC-seq data
+all peaks that have at least 100 reads across all cells, and reduce dimensionality to 50
+```{r}
+DefaultAssay(aj_atac) <- "ATAC"
+
+VariableFeatures(aj_atac) <- names(which(Matrix::rowSums(aj_atac) > 100))
+
+aj_atac <- RunLSI(aj_atac, n = 50, scale.max = NULL)
+
+aj_atac <- RunUMAP(aj_atac, reduction = "lsi", dims = 1:50)
+```
+
+# bl - scATAC
+## gene activity
+peaks_bl peak * cell (if a peak is in a cell)
+activity_mat_bl gene * cell (how many peaks in a gene in a cell)
+```{r}
+peaks_bl <- Read10X_h5("/work/projects/daneurogen/atac_201909/data/03_reanalyze/bl/outs/filtered_peak_bc_matrix.h5")
+
+# Peaks that fall within gene bodies, or 2kb upstream of a gene, are considered
+activity_mat_bl <- CreateGeneActivityMatrix(peak.matrix = peaks_bl, annotation.file = "/work/projects/daneurogen/genome/ref_10xGenomics/refdata-cellranger-atac-mm10-1.1.0/genes/genes.gtf", seq.levels = c(paste("chr", c(1:19, "X", "Y"), sep = "")), upstream = 2000, verbose = T) 
+```
+
+## object
+Filter out all cells here with fewer than 5K total counts in the scATAC-seq data (Seurat)
+```{r}
+bl_atac <- CreateSeuratObject(counts = peaks_bl, assay = "ATAC", project = "10x_ATAC")
+
+bl_atac[["ACTIVITY"]] <- CreateAssayObject(counts = activity_mat_bl)
+
+meta <- read.table("/work/projects/daneurogen/atac_201909/data/03_reanalyze/bl/outs/singlecell.csv", sep = ",", header = TRUE, row.names = 1, stringsAsFactors = FALSE)
+
+meta <- meta[colnames(bl_atac), ]
+
+bl_atac <- AddMetaData(bl_atac, metadata = meta)
+
+bl_atac <- subset(bl_atac, subset = nCount_ATAC > 5000)
+
+bl_atac$tech <- "scATAC-seq"
+```
+
+
+## data processing on assay "ACTIVITY"
+```{r}
+DefaultAssay(bl_atac) <- "ACTIVITY"
+
+bl_atac <- FindVariableFeatures(bl_atac)
+
+bl_atac <- NormalizeData(bl_atac)
+
+bl_atac <- ScaleData(bl_atac)
+```
+
+## data processing on assay "ATAC"
+latent semantic indexing to reduce the dimensionality of the scATAC-seq data
+all peaks that have at least 100 reads across all cells, and reduce dimensionality to 50
+```{r}
+DefaultAssay(bl_atac) <- "ATAC"
+
+VariableFeatures(bl_atac) <- names(which(Matrix::rowSums(bl_atac) > 100))
+
+bl_atac <- RunLSI(bl_atac, n = 50, scale.max = NULL)
+
+bl_atac <- RunUMAP(bl_atac, reduction = "lsi", dims = 1:50)
+```
+
+
+Below is the anchor transfering from scRNA-seq (DropViz). See DropViz folder for detail analysis.
+# anchor_bl
+
+- umap on bl_atac
+```{r}
+pdf("01_no_assign_bl.pdf") 
+DimPlot(bl_atac, reduction = "umap") + NoLegend() + ggtitle("scATAC-seq BL")
+dev.off()
+```
+
+- find anchors
+```{r}
+transfer.anchors_bl <- FindTransferAnchors(reference = dge, query = bl_atac, features = VariableFeatures(object = dge), 
+    reference.assay = "RNA", query.assay = "ACTIVITY", reduction = "cca")
+```
+
+- transfer labels
+```{r}
+celltype.predictions_bl <- TransferData(anchorset = transfer.anchors_bl, refdata = dge$cell_type, weight.reduction = bl_atac[["lsi"]])
+
+bl_atac <- AddMetaData(bl_atac, metadata = celltype.predictions_bl)
+```
+
+- check prediction scores
+```{r}
+pdf("02_prediction.score.max_bl_update.pdf")
+hist(bl_atac$prediction.score.max)
+abline(v = 0.5, col = "red")
+dev.off()
+
+table(bl_atac$prediction.score.max > 0.5)
+# FALSE  TRUE 
+#   636 10347 
+```
+
+- plot with transfered labels (default)
+```{r}
+bl_atac_filtered <- subset(bl_atac, subset = prediction.score.max > 0.5)
+
+bl_atac_filtered$predicted.id <- factor(bl_atac_filtered$predicted.id, levels = levels(dge))  # to make the colors match
+
+
+pdf("03_assign_bl.pdf")
+DimPlot(bl_atac_filtered, 
+        group.by = "predicted.id", 
+        cols = ,
+        label = TRUE, 
+        repel = TRUE) + 
+  ggtitle("scATAC-seq bl cells") + 
+  NoLegend() + 
+  scale_colour_hue(drop = FALSE)
+dev.off()
+```
+
+- plot with transfered labels (filter out Mural, Ependyma, Oligodendrocytel.Tnr, Neuron.Slc17a7.C1ql3 + color)
+```{r}
+bl_atac_filtered_color <- subset(bl_atac, subset = predicted.id %in% c("Astrocyte", "Endothelial_Tip", "Endothelial_Stalk", "Macrophage", "Neuron_many", "Neuron.Slc17a6", "Neuron.Th", "Oligodendrocytel.Tfr", "Polydendrocyte.Tnr", "Polydendrocyte.Tnr.Cspg5"))
+
+bl_atac_filtered_color$predicted.id <- factor(bl_atac_filtered_color$predicted.id, levels = c("Astrocyte", "Endothelial_Tip", "Endothelial_Stalk", "Macrophage", "Neuron_many", "Neuron.Slc17a6", "Neuron.Th", "Oligodendrocytel.Tfr", "Polydendrocyte.Tnr", "Polydendrocyte.Tnr.Cspg5"))  
+
+pdf("03_assign_bl_color.pdf")
+DimPlot(bl_atac_filtered_color, 
+        group.by = "predicted.id", 
+        cols = c("#9851A0", "#3B54A5", "#44ADE2", "#66BD50", "#B3C4BC", "#7A366D", "#C6476C", "#F7EC13", "#AA5026", "#E69577"),
+        label = TRUE, 
+        repel = TRUE) + 
+  ggtitle("scATAC-seq bl cells") + 
+  NoLegend()
+dev.off()
+```
+
+> levels(dge)
+ [1] "Astrocyte"                "Endothelial_Stalk"       
+ [3] "Endothelial_Tip"          "Ependyma"                
+ [5] "Macrophage"               "Mural"                   
+ [7] "Neuron_many"              "Neuron.Slc17a6"          
+ [9] "Neuron.Slc17a7.C1ql3"     "Neuron.Th"               
+[11] "Oligodendrocytel.Tfr"     "Oligodendrocytel.Tnr"    
+[13] "Polydendrocyte.Tnr"       "Polydendrocyte.Tnr.Cspg5"
+
+
+
+check the composition in bl_atac_filtered
+```{r}
+pdf("04_bl_atac_filtered_composition.pdf")
+bl_atac_filtered$predicted.id %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  `colnames<-`(c("cell", "cluster")) %>% 
+  dplyr::count(cluster = as.vector(cluster)) %>% 
+  mutate(pct = prop.table(n)) %>% 
+  ggplot(aes(x = cluster, y = pct, label = scales::percent(pct))) +
+  geom_col(position = 'dodge') + 
+  geom_text(position = position_dodge(width = .9),    # move to center of bars
+            vjust = -0.5,    # nudge above top of bar
+            size = 3) + 
+  scale_y_continuous(labels = scales::percent) +
+  ggtitle("bl_atac_filtered composition") +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+dev.off()
+```
+
+```{r}
+bl_atac_filtered$predicted.id %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  `colnames<-`(c("cell", "cluster")) %>% 
+  dplyr::count(cluster = as.vector(cluster))
+
+# # A tibble: 12 x 2
+#    cluster                      n
+#    <chr>                    <int>
+#  1 Astrocyte                 1389
+#  2 Endothelial_Stalk           69
+#  3 Endothelial_Tip             43
+#  4 Macrophage                 530
+#  5 Mural                       10
+#  6 Neuron_many               5863
+#  7 Neuron.Slc17a6              19
+#  8 Neuron.Th                   45
+#  9 Oligodendrocytel.Tfr      1998
+# 10 Oligodendrocytel.Tnr         1
+# 11 Polydendrocyte.Tnr          73
+# 12 Polydendrocyte.Tnr.Cspg5   258
+```
+
+
+# anchor_aj
+
+- umap on aj_atac
+```{r}
+pdf("05_no_assign_aj.pdf") 
+DimPlot(aj_atac, reduction = "umap") + NoLegend() + ggtitle("scATAC-seq AJ")
+dev.off()
+```
+
+- find anchors
+```{r}
+transfer.anchors_aj <- FindTransferAnchors(reference = dge, query = aj_atac, features = VariableFeatures(object = dge), 
+    reference.assay = "RNA", query.assay = "ACTIVITY", reduction = "cca")
+```
+
+transfer labels
+```{r}
+celltype.predictions_aj <- TransferData(anchorset = transfer.anchors_aj, refdata = dge$cell_type, weight.reduction = aj_atac[["lsi"]])
+
+aj_atac <- AddMetaData(aj_atac, metadata = celltype.predictions_aj)
+```
+
+check prediction scores
+```{r}
+pdf("06_prediction.score.max_aj.pdf")
+hist(aj_atac$prediction.score.max)
+abline(v = 0.5, col = "red")
+dev.off()
+
+table(aj_atac$prediction.score.max > 0.5)
+# FALSE  TRUE 
+#   530 10368
+```
+
+plot with transfered labels
+```{r}
+aj_atac_filtered <- subset(aj_atac, subset = prediction.score.max > 0.5)
+
+aj_atac_filtered$predicted.id <- factor(aj_atac_filtered$predicted.id, levels = levels(dge))  # to make the colors match
+
+pdf("07_assign_aj.pdf")
+DimPlot(aj_atac_filtered, group.by = "predicted.id", label = TRUE, repel = TRUE) + ggtitle("scATAC-seq aj cells") + 
+    NoLegend() + scale_colour_hue(drop = FALSE)
+dev.off()
+
+```
+
+- plot with transfered labels (filter out Mural, Ependyma, Oligodendrocytel.Tnr, Neuron.Slc17a7.C1ql3 + color)
+```{r}
+aj_atac_filtered_color <- subset(aj_atac, subset = predicted.id %in% c("Astrocyte", "Endothelial_Tip", "Endothelial_Stalk", "Macrophage", "Neuron_many", "Neuron.Slc17a6", "Neuron.Th", "Oligodendrocytel.Tfr", "Polydendrocyte.Tnr", "Polydendrocyte.Tnr.Cspg5"))
+
+aj_atac_filtered_color$predicted.id <- factor(aj_atac_filtered_color$predicted.id, levels = c("Astrocyte", "Endothelial_Tip", "Endothelial_Stalk", "Macrophage", "Neuron_many", "Neuron.Slc17a6", "Neuron.Th", "Oligodendrocytel.Tfr", "Polydendrocyte.Tnr", "Polydendrocyte.Tnr.Cspg5"))  
+
+pdf("08_assign_aj_color.pdf")
+DimPlot(aj_atac_filtered_color, 
+        group.by = "predicted.id", 
+        cols = c("#9851A0", "#3B54A5", "#44ADE2", "#66BD50", "#B3C4BC", "#7A366D", "#C6476C", "#F7EC13", "#AA5026", "#E69577"),
+        label = TRUE, 
+        repel = TRUE) + 
+  ggtitle("scATAC-seq aj cells") + 
+  NoLegend()
+dev.off()
+```
+
+
+check the composition in bl_atac_filtered
+```{r}
+pdf("08_aj_atac_filtered_composition.pdf")
+aj_atac_filtered$predicted.id %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  `colnames<-`(c("cell", "cluster")) %>% 
+  dplyr::count(cluster = as.vector(cluster)) %>% 
+  mutate(pct = prop.table(n)) %>% 
+  ggplot(aes(x = cluster, y = pct, label = scales::percent(pct))) +
+  geom_col(position = 'dodge') + 
+  geom_text(position = position_dodge(width = .9),    # move to center of bars
+            vjust = -0.5,    # nudge above top of bar
+            size = 3) + 
+  scale_y_continuous(labels = scales::percent) +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+dev.off()
+```
+
+```{r}
+aj_atac_filtered$predicted.id %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  `colnames<-`(c("cell", "cluster")) %>% 
+  dplyr::count(cluster = as.vector(cluster))
+
+# # A tibble: 11 x 2
+#    cluster                      n
+#    <chr>                    <int>
+#  1 Astrocyte                 1398
+#  2 Endothelial_Stalk          155
+#  3 Endothelial_Tip            195
+#  4 Macrophage                 437
+#  5 Mural                        3
+#  6 Neuron_many               5653
+#  7 Neuron.Slc17a6             449
+#  8 Neuron.Th                  196
+#  9 Oligodendrocytel.Tfr      1472
+# 10 Polydendrocyte.Tnr         151
+# 11 Polydendrocyte.Tnr.Cspg5   251
+```
+
+
+# visualization
+https://satijalab.org/signac/articles/mouse_brain_vignette.html
+detail description: https://satijalab.org/signac/articles/pbmc_vignette.html
+
+## aj
+```{r}
+fragment_path_aj <- "/work/projects/daneurogen/atac_201909/data/03_reanalyze/aj/outs/fragments.tsv.gz"
+```
+
+### filtering the fragment file
+take a long time
+```{r}
+fragment_filtered_aj <- "/work/projects/daneurogen/atac_201909/analysis/01_seurat/02_try_dge_19000/09_fragment_filtered_aj.tsv"
+
+FilterFragments(
+  fragment.path = fragment_path_aj,
+  cells = colnames(aj_atac_filtered),
+  output.path = "09_fragment_filtered_aj"
+)
+
+aj_atac_filtered <- SetFragments(object = aj_atac_filtered, file = paste0("09_fragment_filtered_aj", '.bgz'))
+```
+
+### Create gene activity matrix
+!!CreateGeneActivityMatrix vs. FeatureMatrix => different plots!
+```{r}
+#extract gene coordinates from Ensembl, and ensure name formatting is consistent with  Seurat object 
+gene_coords <- genes(EnsDb.Mmusculus.v79, filter = ~ gene_biotype == "protein_coding")
+seqlevelsStyle(gene_coords) <- 'UCSC'
+gene_coords <- keepStandardChromosomes(gene_coords, pruning.mode = 'coarse')
+genebodyandpromoter_coords <- Extend(x = gene_coords, upstream = 2000, downstream = 0)
+
+# build a gene by cell matrix
+# reads intersecting the gene body and promoter region with 2kb upstream
+gene_activities_aj <- FeatureMatrix(
+  fragments = fragment_path_aj,
+  features = genebodyandpromoter_coords,
+  cells = colnames(aj_atac_filtered),
+  chunk = 10
+)
+
+# convert rownames from chromsomal coordinates into gene names
+gene_key <- genebodyandpromoter_coords$gene_name 
+names(gene_key) <- GRangesToString(grange = genebodyandpromoter_coords)
+rownames(gene_activities_aj) <- make.unique(gene_key[rownames(gene_activities_aj)])
+gene_activities_aj <- gene_activities_aj[rownames(gene_activities_aj)!="",]
+
+#Add the gene activity matrix to the Seurat object as a new assay, and normalize it
+#Normalize to the library size and natural log transformed
+aj_atac_filtered[['EnsDb_Mmusculus_v79']] <- CreateAssayObject(counts = gene_activities_aj)
+aj_atac_filtered <- NormalizeData(
+  object = aj_atac_filtered,
+  assay = 'EnsDb_Mmusculus_v79',
+  normalization.method = 'LogNormalize',
+  scale.factor = median(aj_atac_filtered$nCount_ATAC)
+)
+DefaultAssay(aj_atac_filtered) <- 'EnsDb_Mmusculus_v79'
+
+
+pdf("09_feature_aj.pdf", width = 20)
+FeaturePlot(
+  object = aj_atac_filtered,
+  features = c('Pttg1','Th',"Slc6a3","Ublcp1","Thg1l","Tmem119"),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 3
+)
+dev.off()
+```
+
+replace
+```{r}
+identical(names(aj_atac_filtered$predicted.id), names(Idents(aj_atac_filtered)))
+
+Idents(aj_atac_filtered) <- aj_atac_filtered$predicted.id
+```
+
+### Find differentially accessible peaks between clusters Neuron-Th vs. Astrocyte
+```{r}
+#switch back to working with peaks instead of gene activities
+DefaultAssay(aj_atac_filtered) <- 'ATAC'
+
+da_peaks_aj <- FindMarkers(
+  object = aj_atac_filtered,
+  ident.1 = c("Neuron.Th"),
+  ident.2 = c("Astrocyte"),
+  min.pct = 0.4,
+  test.use = 'LR',
+  latent.vars = 'peak_region_fragments'
+)
+
+head(da_peaks_aj)
+```
+
+example rownames(da_peaks_aj)[2]
+```{r}
+pdf("10_da_aj_example.pdf", width = 20)
+plot1 <- VlnPlot(
+  object = aj_atac_filtered,
+  features = rownames(da_peaks_aj)[2],
+  ncol = 3,
+  pt.size = 0.1,
+  idents = c("Neuron_Th","Astrocyte")
+)
+plot2 <- FeaturePlot(
+  object = aj_atac_filtered,
+  features = rownames(da_peaks_aj)[2],
+  ncol = 3,
+  pt.size = 0.1,
+  max.cutoff = 'q95'
+)
+CombinePlots(list(plot1,plot2))
+dev.off()
+```
+
+select cutoff and assign GRanges to nearby genes
+```{r}
+pdf("11_avg_logFC_aj.pdf")
+da_peaks_aj$avg_logFC %>% 
+  data.frame() %>% 
+  `colnames<-`("ave_logFC") %>% 
+  ggplot(aes(ave_logFC)) +
+  geom_density()
+dev.off()
+
+open_neuron_th <- rownames(da_peaks_aj[da_peaks_aj$avg_logFC > 0.5, ])
+open_astrocyte <- rownames(da_peaks_aj[da_peaks_aj$avg_logFC < -0.5, ])
+closest_neuron_th <- ClosestFeature(regions = open_neuron_th, annotation = EnsDb.Mmusculus.v79, sep = c(':', '-'))
+closest_astrocyte <- ClosestFeature(regions = open_astrocyte, annotation = EnsDb.Mmusculus.v79, sep = c(':', '-'))
+head(closest_neuron_th)
+```
+
+### plot
+```{r}
+# set plotting order
+levels(aj_atac_filtered) <- c("Neuron_many",
+                              "Neuron.Slc17a6",
+                              "Neuron.Th",
+                              "Macrophage",            
+                              "Oligodendrocytel.Tfr",
+                              "Endothelial_Tip", 
+                              "Astrocyte",
+                              "Polydendrocyte.Tnr.Cspg5", 
+                              "Polydendrocyte.Tnr",       
+                              "Endothelial_Stalk",
+                              "Mural")
+
+region1 <- "chrX:131000000-163000000"
+
+region2 <- GRangesToString(subset(gene_coords , symbol=="Pttg1"))
+  
+  pdf("12_coverage_Pttg1_aj.pdf")
+  CoveragePlot(
+    object = aj_atac_filtered,
+    region = c(region2),
+    idents = c("Macrophage", "Neuron_many", "Neuron.Slc17a6", "Neuron.Th"),
+    sep = c(":", "-"),
+    annotation = EnsDb.Mmusculus.v79,
+    extend.upstream = 20000,
+    extend.downstream = 20000,
+    ncol = 1
+  )
+  dev.off()
+```
+
+## bl
+```{r}
+fragment_path_bl <- "/work/projects/daneurogen/atac_201909/data/03_reanalyze/bl/outs/fragments.tsv.gz"
+```
+
+### filtering the fragment file
+take a long time
+```{r}
+fragment_filtered_bl <- "/work/projects/daneurogen/atac_201909/analysis/01_seurat/02_try_dge_19000/13_fragment_filtered_bl.tsv"
+
+FilterFragments(
+  fragment.path = fragment_path_bl,
+  cells = colnames(bl_atac_filtered),
+  output.path = "13_fragment_filtered_bl"
+)
+
+bl_atac_filtered <- SetFragments(object = bl_atac_filtered, file = paste0("13_fragment_filtered_bl", '.bgz'))
+```
+
+### Create gene activity matrix
+!!CreateGeneActivityMatrix vs. FeatureMatrix => different plots!
+```{r}
+#extract gene coordinates from Ensembl, and ensure name formatting is consistent with  Seurat object 
+# gene_coords <- genes(EnsDb.Mmusculus.v79, filter = ~ gene_biotype == "protein_coding")
+# seqlevelsStyle(gene_coords) <- 'UCSC'
+# gene_coords <- keepStandardChromosomes(gene_coords, pruning.mode = 'coarse')
+# genebodyandpromoter_coords <- Extend(x = gene_coords, upstream = 2000, downstream = 0)
+# gene_key <- genebodyandpromoter_coords$gene_name 
+# names(gene_key) <- GRangesToString(grange = genebodyandpromoter_coords)
+
+# build a gene by cell matrix
+# reads intersecting the gene body and promoter region with 2kb upstream
+gene_activities_bl <- FeatureMatrix(
+  fragments = fragment_path_bl,
+  features = genebodyandpromoter_coords,
+  cells = colnames(bl_atac_filtered),
+  chunk = 10
+)
+
+# convert rownames from chromsomal coordinates into gene names
+rownames(gene_activities_bl) <- make.unique(gene_key[rownames(gene_activities_bl)])
+gene_activities_bl <- gene_activities_bl[rownames(gene_activities_bl)!="",]
+
+#Add the gene activity matrix to the Seurat object as a new assay, and normalize it
+#Normalize to the library size and natural log transformed
+bl_atac_filtered[['EnsDb_Mmusculus_v79']] <- CreateAssayObject(counts = gene_activities_bl)
+bl_atac_filtered <- NormalizeData(
+  object = bl_atac_filtered,
+  assay = 'EnsDb_Mmusculus_v79',
+  normalization.method = 'LogNormalize',
+  scale.factor = median(bl_atac_filtered$nCount_ATAC)
+)
+DefaultAssay(bl_atac_filtered) <- 'EnsDb_Mmusculus_v79'
+
+
+pdf("14_feature_bl.pdf", width = 20)
+FeaturePlot(
+  object = bl_atac_filtered,
+  features = c('Pttg1','Th',"Slc6a3","Ublcp1","Thg1l","Tmem119"),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 3
+)
+dev.off()
+```
+
+replace
+```{r}
+identical(names(bl_atac_filtered$predicted.id), names(Idents(bl_atac_filtered)))
+
+Idents(bl_atac_filtered) <- bl_atac_filtered$predicted.id
+```
+
+### Find differentially accessible peaks between clusters
+```{r}
+#switch back to working with peaks instead of gene activities
+DefaultAssay(bl_atac_filtered) <- 'ATAC'
+
+da_peaks_bl <- FindMarkers(
+  object = bl_atac_filtered,
+  ident.1 = c("Neuron.Th"),
+  ident.2 = c("Astrocyte"),
+  min.pct = 0.4,
+  test.use = 'LR',
+  latent.vars = 'peak_region_fragments'
+)
+
+head(da_peaks_bl)
+```
+
+example rownames(da_peaks_bl)[2]
+```{r}
+pdf("15_da_bl_example.pdf", width = 20)
+plot1 <- VlnPlot(
+  object = bl_atac_filtered,
+  features = rownames(da_peaks_bl)[2],
+  ncol = 3,
+  pt.size = 0.1,
+  idents = c("Neuron_Th","Astrocyte")
+)
+plot2 <- FeaturePlot(
+  object = bl_atac_filtered,
+  features = rownames(da_peaks_bl)[2],
+  ncol = 3,
+  pt.size = 0.1,
+  max.cutoff = 'q95'
+)
+CombinePlots(list(plot1,plot2))
+dev.off()
+```
+
+select cutoff and assign GRanges to nearby genes
+```{r}
+pdf("16_avg_logFC_bl.pdf")
+da_peaks_bl$avg_logFC %>% 
+  data.frame() %>% 
+  `colnames<-`("ave_logFC") %>% 
+  ggplot(aes(ave_logFC)) +
+  geom_density()
+dev.off()
+
+open_neuron_th <- rownames(da_peaks_bl[da_peaks_bl$avg_logFC > 0.5, ])
+open_astrocyte <- rownames(da_peaks_bl[da_peaks_bl$avg_logFC < -0.5, ])
+closest_neuron_th <- ClosestFeature(regions = open_neuron_th, annotation = EnsDb.Mmusculus.v79, sep = c(':', '-'))
+closest_astrocyte <- ClosestFeature(regions = open_astrocyte, annotation = EnsDb.Mmusculus.v79, sep = c(':', '-'))
+head(closest_astrocyte)
+```
+
+### plot
+```{r}
+bl_atac_filtered <- SetFragments(
+  object = bl_atac_filtered,
+  file = fragment.path
+)
+
+# set plotting order
+levels(bl_atac_filtered) <- c("Neuron_many",
+                              "Neuron.Slc17a6",
+                              "Neuron.Th",
+                              "Macrophage",            
+                              "Oligodendrocytel.Tfr",
+                              "Oligodendrocytel.Tnr",
+                              "Endothelial_Tip", 
+                              "Astrocyte",
+                              "Polydendrocyte.Tnr.Cspg5",
+                              "Polydendrocyte.Tnr",     
+                              "Endothelial_Stalk",
+                              "Mural")
+
+region1 <- rownames(da_peaks_bl)[2]
+
+region2 <- GRangesToString(subset(gene_coords , symbol=="Tcf7l2"))
+
+pdf("17_coverage_Tcf7l2_bl.pdf")
+CoveragePlot(
+  object = bl_atac_filtered,
+  region = c(region2),
+  # idents = c(""),
+  sep = c(":", "-"),
+  annotation = EnsDb.Mmusculus.v79,
+  extend.upstream = 5000,
+  extend.downstream = 5000,
+  ncol = 1
+)
+dev.off()
+```
+
+# barcodes for each cell type
+
+*function*
+```{r}
+select_barcode <- function(cell_type, seurat_object) {
+  ind <- which(seurat_object@active.ident == cell_type)
+  
+  barcode <- names(seurat_object@active.ident)[ind]
+  
+  return(barcode)
+}
+```
+
+bl
+```{r}
+bl_barcode_in_cell_type <- tibble(cell_type = bl_atac_filtered@active.ident %>% unique)
+
+bl_barcode_in_cell_type <- bl_barcode_in_cell_type %>% 
+  mutate(barcode = pmap(bl_barcode_in_cell_type, ~ select_barcode(.x, bl_atac_filtered)))
+```
+
+aj
+```{r}
+aj_barcode_in_cell_type <- tibble(cell_type = aj_atac_filtered@active.ident %>% unique)
+
+aj_barcode_in_cell_type <- aj_barcode_in_cell_type %>% 
+  mutate(barcode = pmap(aj_barcode_in_cell_type, ~ select_barcode(.x, aj_atac_filtered)))
+```
+
+## subset barcode
+aj
+```{r}
+aj_barcode <- read_csv("/mnt/irisgpfs/projects/daneurogen/atac_201909/data/03_reanalyze/aj/outs/singlecell.csv")
+
+aj_barcode_in_cell_type <- aj_barcode_in_cell_type %>% 
+  mutate(barcode_csv = pmap(dplyr::select(aj_barcode_in_cell_type, barcode),
+                            ~ dplyr::filter(aj_barcode, barcode %in% unlist(.x))))
+
+for (i in 1:dim(aj_barcode_in_cell_type)[1]) {
+  write_csv(aj_barcode_in_cell_type$barcode_csv[[i]], 
+            path = paste("/mnt/irisgpfs/projects/daneurogen/atac_201909/data/04_reanalyze_cell_type/01_barcode/",
+                         "aj_",
+                         aj_barcode_in_cell_type$cell_type[i], 
+                         ".csv", 
+                         sep = ""))
+}
+```
+
+bl
+```{r}
+bl_barcode <- read_csv("/mnt/irisgpfs/projects/daneurogen/atac_201909/data/03_reanalyze/bl/outs/singlecell.csv")
+
+bl_barcode_in_cell_type <- bl_barcode_in_cell_type %>% 
+  mutate(barcode_csv = pmap(dplyr::select(bl_barcode_in_cell_type, barcode),
+                            ~ dplyr::filter(bl_barcode, barcode %in% unlist(.x))))
+
+for (i in 1:dim(bl_barcode_in_cell_type)[1]) {
+  write_csv(bl_barcode_in_cell_type$barcode_csv[[i]], 
+            path = paste("/mnt/irisgpfs/projects/daneurogen/atac_201909/data/04_reanalyze_cell_type/01_barcode/",
+                         "bl_",
+                         bl_barcode_in_cell_type$cell_type[i], 
+                         ".csv", 
+                         sep = ""))
+}
+```
+
+
+############## did not update #####################
+# regulatory variants enrichement plot
+## read in snp data
+```{r}
+# https://davetang.org/muse/2015/02/04/bed-granges/
+bed_to_granges <- function(file){
+   df <- read.table(file,
+                    header=F,
+                    stringsAsFactors=F)
+ 
+   if(length(df) > 6){
+      df <- df[,-c(7:length(df))]
+   }
+ 
+   if(length(df)<3){
+      stop("File has less than 3 columns")
+   }
+ 
+   header <- c('chr','start','end','id','score','strand')
+   names(df) <- header[1:length(names(df))]
+ 
+   if('strand' %in% colnames(df)){
+      df$strand <- gsub(pattern="[^+-]+", replacement = '*', x = df$strand)
+   }
+ 
+   library("GenomicRanges")
+ 
+   if(length(df)==3){
+      gr <- with(df, GRanges(chr, IRanges(start, end)))
+   } else if (length(df)==4){
+      gr <- with(df, GRanges(chr, IRanges(start, end), id=id))
+   } else if (length(df)==5){
+      gr <- with(df, GRanges(chr, IRanges(start, end), id=id, score=score))
+   } else if (length(df)==6){
+      gr <- with(df, GRanges(chr, IRanges(start, end), id=id, score=score, strand=strand))
+   }
+   return(gr)
+}
+
+variant <- bed_to_granges("variant.bed")
+
+variant$id[which(variant$id == ".")] <- paste("unknown", seq(1:length(which(variant$id == "."))), sep = "")
+```
+
+## get genomic ranges from seurat object
+```{r}
+getGenomicRanges <- function(identity, seurat_object){
+  ident.cells <- WhichCells(object = seurat_object, idents = identity)
+  tmp <- seurat_object[["ATAC"]][,ident.cells] %>% 
+    data.frame 
+  tmp <- apply(tmp, 1, function(x) sum(x)> (dim(tmp)[2] * 0.3)) %>%
+    tmp[.,] 
+  tmp <- GenomicRanges::GRanges(rownames(tmp))
+  return(tmp)
+}
+```
+
+aj
+```{r}
+aj_neuron_th <- getGenomicRanges("Neuron_Th", aj_atac_filtered)
+aj_astrocyte <- getGenomicRanges("Astrocyte", aj_atac_filtered)
+aj_endothelial_Stalk <- getGenomicRanges("Endothelial_Stalk", aj_atac_filtered)
+aj_endothelial_Tip <- getGenomicRanges("Endothelial_Tip", aj_atac_filtered)
+aj_macrophage <- getGenomicRanges("Macrophage", aj_atac_filtered)
+aj_neuron_Gad1Gad2Slc17a6 <- getGenomicRanges("Neuron_Gad1Gad2Slc17a6", aj_atac_filtered)
+aj_neuron_Slc17a6_1 <- getGenomicRanges("Neuron_Slc17a6_1", aj_atac_filtered)
+aj_oligodendrocyte_1 <- getGenomicRanges("oligodendrocyte_1", aj_atac_filtered)
+aj_oligodendrocyte_2 <- getGenomicRanges("Oligodendrocyte_2", aj_atac_filtered)
+aj_polydendrocyte_1 <- getGenomicRanges("Polydendrocyte_1", aj_atac_filtered)
+aj_polydendrocyte_2 <- getGenomicRanges("Polydendrocyte_2", aj_atac_filtered)
+aj_mural <- getGenomicRanges("Mural", aj_atac_filtered)
+```
+
+bl
+```{r}
+bl_neuron_th <- getGenomicRanges("Neuron_Th", bl_atac_filtered)
+bl_astrocyte <- getGenomicRanges("Astrocyte", bl_atac_filtered)
+bl_endothelial_Stalk <- getGenomicRanges("Endothelial_Stalk", bl_atac_filtered)
+bl_endothelial_Tip <- getGenomicRanges("Endothelial_Tip", bl_atac_filtered)
+bl_macrophage <- getGenomicRanges("Macrophage", bl_atac_filtered)
+bl_neuron_Gad1Gad2Slc17a6 <- getGenomicRanges("Neuron_Gad1Gad2Slc17a6", bl_atac_filtered)
+bl_neuron_Slc17a6_1 <- getGenomicRanges("Neuron_Slc17a6_1", bl_atac_filtered)
+bl_oligodendrocyte_1 <- getGenomicRanges("oligodendrocyte_1", bl_atac_filtered)
+bl_polydendrocyte_1 <- getGenomicRanges("Polydendrocyte_1", bl_atac_filtered)
+bl_polydendrocyte_2 <- getGenomicRanges("Polydendrocyte_2", bl_atac_filtered)
+bl_mural <- getGenomicRanges("Mural", bl_atac_filtered)
+```
+
+
+## download to work in local
+```{r}
+save(variant, aj_neuron_th, aj_astrocyte, aj_endothelial_Stalk, aj_endothelial_Tip, aj_macrophage, aj_neuron_Gad1Gad2Slc17a6, aj_neuron_Slc17a6_1, aj_oligodendrocyte_1, aj_oligodendrocyte_2,aj_polydendrocyte_1, aj_polydendrocyte_2, aj_mural, bl_neuron_th, bl_astrocyte, bl_endothelial_Stalk, bl_endothelial_Tip, bl_macrophage, bl_neuron_Gad1Gad2Slc17a6, bl_neuron_Slc17a6_1, bl_oligodendrocyte_1, bl_polydendrocyte_1, bl_polydendrocyte_2, bl_mural,file = "variant_20191204.RData")
+```
+
+```{r}
+save(variant, aj_neuron_th, aj_astrocyte, aj_endothelial_Stalk, aj_endothelial_Tip, aj_macrophage, aj_neuron_Gad1Gad2Slc17a6, aj_neuron_Slc17a6_1, aj_oligodendrocyte_1, aj_oligodendrocyte_2,aj_polydendrocyte_1, aj_polydendrocyte_2, aj_mural,file = "variant_20191204.RData")
+```
+
+remove aj_oligodendrocyte_2 and aj_mural, no GRanges
+
+aj
+```{r}
+tmp_aj <- data.frame(matrix(ncol = 3909, nrow = 10, data = 0)) 
+rownames(tmp_aj) <- c("neuron_th", "neuron_Gad1Gad2Slc17a6", "neuron_Slc17a6_1", "astrocyte", "endothelial_Stalk", "endothelial_Tip", "macrophage", "oligodendrocyte_1", "polydendrocyte_1", "polydendrocyte_2")
+
+tmp_aj[1, findOverlaps(variant, aj_neuron_th) %>% as.matrix() %>% .[,1]] <- 1
+tmp_aj[2, findOverlaps(variant, aj_neuron_Gad1Gad2Slc17a6) %>% as.matrix() %>% .[,1]] <- 1
+tmp_aj[3, findOverlaps(variant, aj_neuron_Slc17a6_1) %>% as.matrix() %>% .[,1]] <- 1
+tmp_aj[4, findOverlaps(variant, aj_astrocyte) %>% as.matrix() %>% .[,1]] <- 1
+tmp_aj[5, findOverlaps(variant, aj_endothelial_Stalk) %>% as.matrix() %>% .[,1]] <- 1
+tmp_aj[6, findOverlaps(variant, aj_endothelial_Tip) %>% as.matrix() %>% .[,1]] <- 1
+tmp_aj[7, findOverlaps(variant, aj_macrophage) %>% as.matrix() %>% .[,1]] <- 1
+
+tmp_aj[8, findOverlaps(variant, aj_oligodendrocyte_1) %>% as.matrix() %>% .[,1]] <- 1
+tmp_aj[9, findOverlaps(variant, aj_polydendrocyte_1) %>% as.matrix() %>% .[,1]] <- 1
+tmp_aj[10, findOverlaps(variant, aj_polydendrocyte_2) %>% as.matrix() %>% .[,1]] <- 1
+
+colnames(tmp_aj) <- variant %>% data.frame() %>% .$id
+
+pdf("~/Desktop/hp_aj.pdf", width = 6, height = 2)
+pheatmap::pheatmap(as.matrix(tmp_aj), cluster_rows = F, cluster_cols = T, scale = "none", legend = F, annotation_names_col = F, show_colnames = F)
+dev.off()
+```
+
+bl
+```{r}
+tmp <- data.frame(matrix(ncol = 3909, nrow = 11, data = 0)) 
+rownames(tmp) <- c("neuron_th", "neuron_Gad1Gad2Slc17a6", "neuron_Slc17a6_1", "astrocyte", "endothelial_Stalk", "endothelial_Tip", "macrophage", "oligodendrocyte_1", "polydendrocyte_1", "polydendrocyte_2", "mural")
+
+tmp[1, findOverlaps(variant, bl_neuron_th) %>% as.matrix() %>% .[,1]] <- 1
+tmp[2, findOverlaps(variant, bl_neuron_Gad1Gad2Slc17a6) %>% as.matrix() %>% .[,1]] <- 1
+tmp[3, findOverlaps(variant, bl_neuron_Slc17a6_1) %>% as.matrix() %>% .[,1]] <- 1
+tmp[4, findOverlaps(variant, bl_astrocyte) %>% as.matrix() %>% .[,1]] <- 1
+tmp[5, findOverlaps(variant, bl_endothelial_Stalk) %>% as.matrix() %>% .[,1]] <- 1
+tmp[6, findOverlaps(variant, bl_endothelial_Tip) %>% as.matrix() %>% .[,1]] <- 1
+tmp[7, findOverlaps(variant, bl_macrophage) %>% as.matrix() %>% .[,1]] <- 1
+
+tmp[8, findOverlaps(variant, bl_oligodendrocyte_1) %>% as.matrix() %>% .[,1]] <- 1
+tmp[9, findOverlaps(variant, bl_polydendrocyte_1) %>% as.matrix() %>% .[,1]] <- 1
+tmp[10, findOverlaps(variant, bl_polydendrocyte_2) %>% as.matrix() %>% .[,1]] <- 1
+tmp[11, findOverlaps(variant, bl_mural) %>% as.matrix() %>% .[,1]] <- 1
+
+colnames(tmp) <- variant %>% data.frame() %>% .$id
+
+pdf("18_hp_bl.pdf", width = 6, height = 2)
+pheatmap::pheatmap(as.matrix(tmp), cluster_rows = F, cluster_cols = T, scale = "none", legend = F, annotation_names_col = F, show_colnames = F)
+dev.off()
+```
+
+
+# regulatory variants affecting cell type expression
+
+read in AJ and BL6 deconvolution
+```{r}
+aj_deconv <- read_delim("~/iris/atac_201909/analysis/02_cibersortx/rep2/03_GEP/01_group_aj/CIBERSORTxGEP_Job2_GEPs_Filtered.txt", delim = "\t") %>% 
+  dplyr::select(GeneSymbol, Neuron, Astrocyte, Macrophage)
+
+bl_deconv <- read_delim("~/iris/atac_201909/analysis/02_cibersortx/rep2/03_GEP/02_group_bl/CIBERSORTxGEP_Job1_GEPs_Filtered.txt", delim = "\t") %>% 
+  dplyr::select(GeneSymbol, Neuron, Astrocyte, Macrophage)
+
+plot_deconv <- function(gene){
+  bind_rows(aj_deconv %>% 
+              filter(GeneSymbol == gene) %>% 
+              mutate(strain = "AJ"),
+            bl_deconv %>% 
+              filter(GeneSymbol == gene) %>% 
+              mutate(strain = "BL")) %>% 
+    dplyr::select(-GeneSymbol) %>% 
+    gather(cell_type, expression, -strain) %>% 
+    ggplot(aes(cell_type, expression, col = strain)) +
+    geom_point() +
+    xlab("Cell type") +
+    ylab("Cell type deconvolution") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    theme_bw()
+}
+```
+
+varaint in neuron_th but not in macrophage
+```{r}
+snp_gene <- read_csv("/Volumes/FSTC_SYSBIO/Yujuan.GUI/manuscript/manuscript1/table/intermediate/s4_snp_gene.csv")
+
+bl_aj <- res$fdr_tib[1] %>% getGeneNames()
+
+tt <- tmp_aj %>% 
+  t() %>% 
+  data.frame() %>% 
+  rownames_to_column(var = "variants") %>% 
+  
+  filter(neuron_Gad1Gad2Slc17a6 == 1 & macrophage == 0 & astrocyte == 0) %>% 
+  
+  left_join(., snp_gene, by = c("variants" = "ID")) %>% 
+  dplyr::select(gene_name, variants) %>% 
+  unique() %>% 
+  filter(!is.na(gene_name)) %>% 
+  left_join(., bl_aj, by = c("gene_name" = "external_gene_name"))
+
+tt %>% 
+  filter(sig == TRUE) %>% 
+  unique
+
+rpkm_plot("Rtbdn")
+```
+
+```{r}
+plot_deconv("Klhdc9")
+```
+
+# For 20200514 discussion on manuscript 3
+rerun clustering on scRNA-seq
+```{r}
+pdf("18_featureplot_rna_Mbp.pdf")
+FeaturePlot(dge, features = "Mbp", label = T)
+dev.off()
+
+pdf("18_featureplot_rna_lef1.pdf")
+FeaturePlot(dge, features = "Lef1", label = T)
+dev.off()
+
+pdf("18_featureplot_rna_tcf7l1.png")
+FeaturePlot(dge, features = "Tcf7l1", label = T)
+dev.off()
+```
+
+```{r}
+pdf("19_dimplot_rna_clustering.pdf")
+DimPlot(dge, reduction = "umap", label = TRUE, pt.size = 0.5)
+dev.off()
+```
+
+```{r}
+DefaultAssay(bl_atac) <- 'RNA'
+
+pdf("20_featurePlot_bl_atac_Tcf7l2.pdf")
+FeaturePlot(
+  object = bl_atac,
+  features = c('Tcf7l2'),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 3
+)
+dev.off()
+
+pdf("20_featurePlot_bl_atac_lef1.pdf")
+FeaturePlot(
+  object = bl_atac,
+  features = c('Lef1'),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 3
+)
+dev.off()
+```
+
+plot cell type identity genes for fig3b
+```{r}
+check <- readRDS("~/iris/atac_201909/analysis/05_dropVizAssignment_background/08_check.rds")
+
+percentile <- readRDS("~/iris/atac_201909/analysis/05_dropVizAssignment_background/05_sn_percentile_85.rds") 
+
+percentile <- dplyr::select(percentile, check$cell_type, gene_name) %>% 
+  as.data.frame
+
+dplyr::select(check, cell_type) %>% 
+  mutate(dd = 
+pmap(
+  dplyr::select(check, uni_30_expr, cell_type),
+  ~ rowSums(as.data.frame(as.matrix(.x)) > filter(percentile, gene_name %in% rownames(.x)) %>% dplyr::select(.y) %>% .[,1])/dim(.x)[2]
+)) -> dat
+
+dat$cell_type
+
+filter(dat, cell_type == "Polydendrocyte.Tnr.Cspg5") %>% 
+  .$dd %>% 
+  unlist() %>% 
+  sort(decreasing = T)
+
+
+pdf("18_featureplot_rna_Olig1.pdf")
+FeaturePlot(dge, features = "Olig1", label = T)
+dev.off()
+```
+
+# count how many snps in fig5A
+```{bash}
+awk '{ if (($1 == 14) && ($2 >= 45627235) && ($3 <= 45687235) ) { print } }' AJ_snpIndel_sort.bed | wc -l
+```
+
+# check accessibility and expression of col4a6 and pttg1
+```{r}
+pdf("22_featureplot_rna_Col4a6.pdf")
+FeaturePlot(dge, features = "Col4a6", label = T)
+dev.off()
+
+pdf("22_featureplot_rna_Pttg1.pdf")
+FeaturePlot(dge, features = "Pttg1", label = T)
+dev.off()
+```
+
+
+```{r}
+DefaultAssay(bl_atac) <- 'RNA'
+
+pdf("21_featurePlot_bl_atac_Col4a6.pdf")
+FeaturePlot(
+  object = bl_atac,
+  features = c('Col4a6'),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 3,
+  label = T
+)
+dev.off()
+
+pdf("21_featurePlot_bl_atac_Pttg1.pdf")
+FeaturePlot(
+  object = bl_atac,
+  features = c('Pttg1'),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 3,
+  label = T
+)
+dev.off()
+```
+
+```{r}
+DefaultAssay(aj_atac) <- 'RNA'
+
+pdf("21_featurePlot_aj_atac_Col4a6.pdf")
+FeaturePlot(
+  object = aj_atac,
+  features = c('Col4a6'),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 3,
+  label = T
+)
+dev.off()
+
+pdf("21_featurePlot_aj_atac_Pttg1.pdf")
+FeaturePlot(
+  object = aj_atac,
+  features = c('Pttg1'),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 3,
+  label = T
+)
+dev.off()
+```
+
+```{r}
+rpkm_plot("Sox2")
+```
+
